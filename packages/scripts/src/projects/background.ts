@@ -17,6 +17,8 @@ import {
 	$menu,
 	cors
 } from 'easy-us';
+// easy-us 未从主入口导出 $win（悬浮窗实例），从内部模块引入以便在可见性恢复时刷新面板
+import { $win } from 'easy-us/lib/utils/start';
 import semver_gt from 'semver/functions/gt';
 import semver_valid from 'semver/functions/valid';
 import { CommonProject } from './common';
@@ -1318,7 +1320,30 @@ export const BackgroundProject = Project.create({
 				}
 
 				let messageElement: MessageElement | undefined;
+				/** 上一次的可见性状态，用于检测 hidden -> visible 切换 */
+				let wasHidden = document.visibilityState === 'hidden';
 				visibleDetect();
+
+				/**
+				 * 页面从后台恢复到前台时的修复操作：
+				 * 1. 派发 mouseup / touchend：若用户在悬浮窗上按下鼠标后最小化浏览器，easy-us 的拖动监听
+				 *    （document 级 mousemove/mouseup）会因 mouseup 未派发而永远卡住，导致恢复后面板跟随鼠标乱跑、
+				 *    按钮点不准。这里主动派发结束事件解除卡住的拖动状态。
+				 * 2. 调用 $win.refreshPanel()：重建面板 DOM，恢复可能因后台渲染异常而失效的交互状态。
+				 */
+				function handleVisibilityRestore() {
+					try {
+						document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+						document.dispatchEvent(new TouchEvent('touchend', { bubbles: true }));
+					} catch {
+						/* 某些环境不支持 TouchEvent，忽略 */
+					}
+					try {
+						$win?.refreshPanel();
+					} catch {
+						/* 面板实例不可用时忽略 */
+					}
+				}
 
 				/** 切到后台时静音页面中正在播放的视频，避免浏览器暂停后台未静音视频；回到前台时恢复静音状态 */
 				function handleVideosVisibility(hidden: boolean) {
@@ -1351,6 +1376,7 @@ export const BackgroundProject = Project.create({
 						const warningEnabled = CommonProject.scripts.settings.cfg.enableVisibilityWarning !== false;
 
 						if (hidden) {
+							wasHidden = true;
 							handleVideosVisibility(true);
 							if (warningEnabled && !messageElement) {
 								messageElement = $message.warn({
@@ -1365,6 +1391,11 @@ export const BackgroundProject = Project.create({
 							if (messageElement) {
 								messageElement.remove();
 								messageElement = undefined;
+							}
+							// 仅在从 hidden -> visible 切换时执行一次修复，避免每秒重复刷新面板
+							if (wasHidden) {
+								wasHidden = false;
+								handleVisibilityRestore();
 							}
 						}
 						visibleDetect();

@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.3.6](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.6) (2026-11-07)
+
+### 🐛 问题修复
+
+* 修复浏览器最小化/切屏恢复后，脚本悬浮窗界面无法点击的问题：若在面板上按下鼠标后最小化，easy-us 的拖动监听会因 `mouseup` 未派发而永久卡住，导致恢复后面板跟随鼠标乱跑、按钮点不准。现切回前台时主动派发 `mouseup`/`touchend` 解除卡住的拖动状态，并刷新面板 DOM
+
 ## [5.3.5](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.5) (2026-11-07)
 
 ### ⚡ 优化改进
