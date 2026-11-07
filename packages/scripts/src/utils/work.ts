@@ -21,6 +21,7 @@ import {
 	ImageSuggestionResult,
 	isAnswererWrappersSupportImageOptimize
 } from './answerer-env';
+import { applyAIUncertainFallback } from './ai-answerer';
 
 // 重新导出，保持对外 API 不变（common.ts / exploration.ts 等仍从本文件导入）
 export {
@@ -594,6 +595,9 @@ export function createCommonAnswerer(options: {
 	/** 降级提示仅每次会话提示一次，避免逐题刷屏 */
 	let imageOptimizeOffWarned = false;
 	let imageConvertFailWarned = false;
+	/** AI 无法确定时的兜底提示每次会话仅提示一次 */
+	let aiBankFallbackWarned = false;
+	let aiRandomFallbackWarned = false;
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
 		const titleResult = normalize(options.titleTransform(elements, ctx));
@@ -658,6 +662,32 @@ export function createCommonAnswerer(options: {
 						}
 					}
 				}
+			}
+
+			// AI 无法确定答案时的兜底：禁止直接提交不确定答案 → 优先题库 → 题库也没有则随机兜底
+			const cfg = CommonProject.scripts.settings.cfg;
+			const fallback = applyAIUncertainFallback(searchInfos, {
+				type: ctx.type,
+				title,
+				optionCount: (ctx.elements.options ?? []).length,
+				completionTexts: String(cfg['randomWork-completeTexts-textarea'] ?? '')
+					.split('\n')
+					.filter(Boolean),
+				enabled: cfg['aiSearchFallbackRandom'] !== false
+			});
+			if (fallback.usedBank && !aiBankFallbackWarned) {
+				aiBankFallbackWarned = true;
+				$message.warn({
+					content: 'AI 无法确定该题答案，已优先使用题库答案。',
+					duration: 10
+				});
+			}
+			if (fallback.usedRandom && !aiRandomFallbackWarned) {
+				aiRandomFallbackWarned = true;
+				$message.warn({
+					content: 'AI 无法确定该题答案，题库也未搜到，已随机生成答案兜底（不保证正确）。',
+					duration: 10
+				});
 			}
 			return searchInfos;
 		});

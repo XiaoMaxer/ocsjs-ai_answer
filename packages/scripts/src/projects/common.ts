@@ -1094,6 +1094,16 @@ export const CommonProject = Project.create({
 						title: '填写接口服务商提供的模型名称，不同服务可在同一接口下切换模型。'
 					}
 				},
+				aiSearchFallbackRandom: {
+					label: 'AI 无法确定时随机兜底',
+					defaultValue: true,
+					attrs: {
+						type: 'checkbox',
+						title:
+							'AI 无法确定答案时禁止直接提交该 AI 答案：优先使用题库答案；题库也没有答案时，随机生成一个答案作为兜底（不保证正确）。' +
+							'关闭后，此类题目将留空不答。题库需已配置并启用才会作为优先替代方案。'
+					}
+				},
 				aiSearchTemperature: {
 					showIf: 'common.settings.advancedSettings',
 					elementClassName: 'config-details',

@@ -1,4 +1,4 @@
-import type { AnswererWrapper } from '@ocsjs/core';
+import type { AnswererWrapper, SearchInformation } from '@ocsjs/core';
 
 /**
  * AI 搜题（大模型）核心模块。
@@ -16,6 +16,169 @@ import type { AnswererWrapper } from '@ocsjs/core';
 
 /** AI 搜题在搜索结果中的展示名称 */
 export const AI_SEARCH_ANSWERER_NAME = '🤖 AI 搜题';
+
+/** 随机兜底结果在搜索结果中的展示名称 */
+export const AI_RANDOM_FALLBACK_NAME = '🎲 随机兜底';
+
+/**
+ * 判断 AI 的回答是否为「无法确定」类回答。
+ * 命中后禁止把该回答当作答案提交：优先使用题库答案，题库也无答案时才启用随机兜底。
+ */
+export function isAIUncertainAnswer(content: string): boolean {
+	let text = String(content ?? '').trim();
+	text = text.replace(/^答案\s*[:：]\s*/i, '').replace(/^AI\s*[:：]?\s*/i, '');
+	text = text.replace(/[。.!！?？"'“”‘’\s]/g, '');
+	return /^(无法确定|不确定|无法回答|无法判断|不能确定|不知道|未知|无答案|无法作答)$/i.test(text);
+}
+
+/** 随机兜底答案生成参数 */
+export interface RandomFallbackAnswerOptions {
+	/** 题目类型：single / multiple / judgement / completion */
+	type?: string;
+	/** 选项数量（填空题时为填空框数量） */
+	optionCount: number;
+	/** 填空题随机文案候选，默认使用内置文案 */
+	completionTexts?: string[];
+	/** 注入随机数生成器，便于单元测试（返回 [0, 1)） */
+	random?: () => number;
+}
+
+/**
+ * 生成随机兜底答案。
+ * - 单选：随机选项字母；
+ * - 多选：随机 1~N 个不重复选项字母，按字母顺序用 # 连接；
+ * - 判断：随机「正确」或「错误」（可匹配任意对/错形式的选项）；
+ * - 填空：随机文案按填空数量用 # 连接；
+ * - 无选项或无法识别类型时返回 undefined，保持原行为（不提交）。
+ */
+export function createRandomFallbackAnswer(options: RandomFallbackAnswerOptions): string | undefined {
+	const count = Math.max(0, Math.floor(Number(options.optionCount) || 0));
+	const random = options.random ?? Math.random;
+	const pick = (max: number) => Math.min(max - 1, Math.max(0, Math.floor(random() * max)));
+
+	switch (options.type) {
+		case 'single':
+			return count > 0 ? String.fromCharCode(65 + pick(count)) : undefined;
+		case 'multiple': {
+			if (count <= 0) return undefined;
+			const selected = 1 + pick(count);
+			const pool = Array.from({ length: count }, (_, i) => i);
+			// Fisher-Yates 洗牌后取前 selected 个，保证不重复
+			for (let i = pool.length - 1; i > 0; i--) {
+				const j = pick(i + 1);
+				[pool[i], pool[j]] = [pool[j], pool[i]];
+			}
+			return pool
+				.slice(0, selected)
+				.sort((a, b) => a - b)
+				.map((i) => String.fromCharCode(65 + i))
+				.join('#');
+		}
+		case 'judgement':
+			return random() < 0.5 ? '正确' : '错误';
+		case 'completion': {
+			let texts = (options.completionTexts ?? []).map((t) => String(t).trim()).filter(Boolean);
+			if (!texts.length) texts = ['不会', '不知道', '不清楚', '不懂', '不会写'];
+			const text = texts[pick(texts.length)];
+			return Array(Math.max(1, count)).fill(text).join('#');
+		}
+		default:
+			return count > 0 ? String.fromCharCode(65 + pick(count)) : undefined;
+	}
+}
+
+/**
+ * AI 无法确定答案时的兜底处理结果
+ */
+export interface AIUncertainFallbackResult {
+	/** 是否使用了题库答案 */
+	usedBank: boolean;
+	/** 是否使用了随机兜底 */
+	usedRandom: boolean;
+	/** 随机兜底的答案（usedRandom 为 true 时有值） */
+	randomAnswer?: string;
+}
+
+/**
+ * AI 无法确定答案时执行兜底：
+ * 1. 剔除 AI 的不确定回答，禁止其参与答案匹配与提交（尤其是填空题会被原样填入）；
+ * 2. 题库存在有效答案时优先使用题库（题库条目本来就在 AI 之前，剔除 AI 后自然优先命中）；
+ * 3. 题库也无答案时，按题目类型生成随机答案作为最后的兜底（可关闭）。
+ *
+ * @returns 兜底行为信息，供调用方展示用户提示
+ */
+export function applyAIUncertainFallback(
+	searchInfos: SearchInformation[],
+	options: {
+		type?: string;
+		title?: string;
+		optionCount: number;
+		completionTexts?: string[];
+		/** 是否允许随机兜底 */
+		enabled: boolean;
+		/** 注入随机数生成器，便于测试 */
+		random?: () => number;
+	}
+): AIUncertainFallbackResult {
+	const isAIInfo = (info: SearchInformation) => info.name === AI_SEARCH_ANSWERER_NAME;
+	const isUncertain = (result: { answer?: any; extra_data?: any }) =>
+		result.extra_data?.uncertain === true || isAIUncertainAnswer(String(result.answer ?? ''));
+
+	const uncertainInfos = searchInfos.filter(
+		(info) => isAIInfo(info) && info.results?.some((result) => isUncertain(result))
+	);
+	if (!uncertainInfos.length) {
+		return { usedBank: false, usedRandom: false };
+	}
+
+	const bankHasAnswer = searchInfos.some(
+		(info) => !isAIInfo(info) && info.results?.some((result) => String(result.answer ?? '').trim().length > 0)
+	);
+
+	// 剔除不确定回答，避免其被解析器当作真实答案（填空题型会直接写入输入框）
+	for (const info of uncertainInfos) {
+		info.results = info.results.filter((result) => !isUncertain(result));
+		info.error =
+			'AI 无法确定该题答案' +
+			(bankHasAnswer
+				? '，已改用题库答案。'
+				: options.enabled
+				? '，题库也无答案，已启用随机答案兜底。'
+				: '，题库也无答案，本题将留空不答。');
+	}
+
+	if (bankHasAnswer) {
+		return { usedBank: true, usedRandom: false };
+	}
+	if (!options.enabled) {
+		return { usedBank: false, usedRandom: false };
+	}
+
+	const randomAnswer = createRandomFallbackAnswer({
+		type: options.type,
+		optionCount: options.optionCount,
+		completionTexts: options.completionTexts,
+		random: options.random
+	});
+	if (!randomAnswer) {
+		return { usedBank: false, usedRandom: false };
+	}
+
+	searchInfos.push({
+		name: AI_RANDOM_FALLBACK_NAME,
+		homepage: '#',
+		url: '#',
+		results: [
+			{
+				question: options.title ?? '',
+				answer: randomAnswer,
+				extra_data: { randomFallback: true }
+			}
+		]
+	});
+
+	return { usedBank: false, usedRandom: true, randomAnswer };
+}
 
 /** 默认系统提示词：要求模型只输出可直接用于选项匹配的最终答案 */
 export const DEFAULT_AI_SYSTEM_PROMPT = [
@@ -254,7 +417,9 @@ function createResponseHandler(): string {
 		content = content.map(function (part) { return (part && (part.text || part.content)) || ''; }).join('');
 	}
 	if (typeof content !== 'string' || !content.trim()) { fail('接口返回格式异常（未找到回答内容，请确认接口为 OpenAI 兼容格式）'); }
-	return [undefined, content.trim(), { ai: true }];
+	var normalized = content.trim().replace(/^答案\\s*[:：]\\s*/i, '').replace(/^AI\\s*[:：]?\\s*/i, '').replace(/[。.!！?？"'“”‘’\\s]/g, '');
+	var uncertain = /^(无法确定|不确定|无法回答|无法判断|不能确定|不知道|未知|无答案|无法作答)$/i.test(normalized);
+	return [undefined, content.trim(), { ai: true, uncertain: uncertain }];
 }`;
 }
 

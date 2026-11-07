@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
 	AI_SEARCH_ANSWERER_NAME,
+	AI_RANDOM_FALLBACK_NAME,
 	AI_SEARCH_DEFAULTS,
 	DEFAULT_AI_SYSTEM_PROMPT,
 	normalizeAISearchConfig,
@@ -9,7 +10,10 @@ import {
 	buildAIMessages,
 	createAIAnswererWrapper,
 	mergeAIAnswererIntoWrappers,
-	readAISearchConfig
+	readAISearchConfig,
+	isAIUncertainAnswer,
+	createRandomFallbackAnswer,
+	applyAIUncertainFallback
 } from '../packages/scripts/src/utils/ai-answerer';
 
 /** 测试专用占位值：刻意不使用真实密钥格式，避免被误认为泄露或触发密钥扫描 */
@@ -322,6 +326,123 @@ test('空题库 + 启用 AI 时可正常生成列表（AI-only 模式）', () =>
 test('原有题库包装器不携带 timeout_seconds 时仍保持原样（旧配置兼容）', () => {
 	assert.equal('timeout_seconds' in legacyWrapper, false);
 	assert.deepEqual(mergeAIAnswererIntoWrappers([legacyWrapper], {}), [legacyWrapper]);
+});
+
+console.log(`\n[5] AI 无法确定时的兜底逻辑`);
+
+test('识别「无法确定」类回答', () => {
+	assert.equal(isAIUncertainAnswer('AI无法确定'), true);
+	assert.equal(isAIUncertainAnswer('答案：无法确定。'), true);
+	assert.equal(isAIUncertainAnswer('无法判断'), true);
+	assert.equal(isAIUncertainAnswer('不知道'), true);
+	assert.equal(isAIUncertainAnswer('A'), false);
+	assert.equal(isAIUncertainAnswer('正确'), false);
+	assert.equal(isAIUncertainAnswer('无法确定协议细节'), false);
+});
+
+test('响应处理器标记不确定答案，但不影响正常答案', () => {
+	let result = runHandler(createWrapper(), JSON.stringify({ choices: [{ message: { content: 'AI无法确定' } }] }));
+	assert.equal(result[2].ai, true);
+	assert.equal(result[2].uncertain, true);
+
+	result = runHandler(createWrapper(), JSON.stringify({ choices: [{ message: { content: 'A#C' } }] }));
+	assert.equal(result[2].uncertain, false);
+});
+
+test('随机兜底答案生成（单选 / 多选 / 判断 / 填空）', () => {
+	assert.equal(createRandomFallbackAnswer({ type: 'single', optionCount: 4, random: () => 0 }), 'A');
+	assert.equal(createRandomFallbackAnswer({ type: 'single', optionCount: 4, random: () => 0.99 }), 'D');
+	assert.equal(createRandomFallbackAnswer({ type: 'single', optionCount: 0, random: () => 0 }), undefined);
+
+	assert.match(createRandomFallbackAnswer({ type: 'multiple', optionCount: 4, random: () => 0 })!, /^[A-D]$/);
+	assert.equal(createRandomFallbackAnswer({ type: 'multiple', optionCount: 4, random: () => 0.99 }), 'A#B#C#D');
+	assert.equal(createRandomFallbackAnswer({ type: 'multiple', optionCount: 0 }), undefined);
+
+	assert.equal(createRandomFallbackAnswer({ type: 'judgement', optionCount: 2, random: () => 0 }), '正确');
+	assert.equal(createRandomFallbackAnswer({ type: 'judgement', optionCount: 2, random: () => 0.99 }), '错误');
+
+	assert.equal(
+		createRandomFallbackAnswer({
+			type: 'completion',
+			optionCount: 2,
+			completionTexts: ['不会', '不知道'],
+			random: () => 0
+		}),
+		'不会#不会'
+	);
+	assert.equal(
+		createRandomFallbackAnswer({ type: 'completion', optionCount: 1, completionTexts: [], random: () => 0 }),
+		'不会'
+	);
+});
+
+test('题库有答案时剔除 AI 不确定回答并优先使用题库', () => {
+	const infos: any[] = [
+		{ name: '言溪题库', results: [{ question: '题目', answer: 'B' }] },
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: 'AI无法确定', extra_data: { ai: true, uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, { type: 'single', optionCount: 4, enabled: true });
+	assert.equal(result.usedBank, true);
+	assert.equal(result.usedRandom, false);
+	assert.equal(infos.length, 2, '不新增随机兜底条目');
+	assert.equal(infos[0].results[0].answer, 'B');
+	assert.equal(infos[1].results.length, 0, '不确定答案被剔除，禁止参与匹配与提交');
+	assert.match(infos[1].error, /已改用题库答案/);
+});
+
+test('题库无答案时启用随机兜底（默认策略）', () => {
+	const infos: any[] = [
+		{ name: '言溪题库', results: [], error: '未搜到' },
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: '无法确定', extra_data: { ai: true, uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, {
+		type: 'single',
+		title: '题目',
+		optionCount: 4,
+		enabled: true,
+		random: () => 0.99
+	});
+	assert.equal(result.usedRandom, true);
+	assert.equal(result.randomAnswer, 'D');
+	assert.equal(infos.length, 3);
+	assert.equal(infos[2].name, AI_RANDOM_FALLBACK_NAME);
+	assert.equal(infos[2].results[0].answer, 'D');
+	assert.match(infos[1].error, /随机答案兜底/);
+});
+
+test('关闭随机兜底时不生成随机答案', () => {
+	const infos: any[] = [
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: '无法确定', extra_data: { uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, { type: 'single', optionCount: 4, enabled: false });
+	assert.equal(result.usedRandom, false);
+	assert.equal(infos.length, 1);
+	assert.equal(infos[0].results.length, 0);
+	assert.match(infos[0].error, /留空不答/);
+});
+
+test('正常 AI 答案与原有题库结果完全不受兜底逻辑影响', () => {
+	const infos: any[] = [
+		{ name: '言溪题库', results: [{ question: '题目', answer: 'A' }] },
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: 'A', extra_data: { ai: true, uncertain: false } }]
+		}
+	];
+	const snapshot = JSON.stringify(infos);
+	const result = applyAIUncertainFallback(infos, { type: 'single', optionCount: 4, enabled: true });
+	assert.equal(result.usedBank, false);
+	assert.equal(result.usedRandom, false);
+	assert.equal(JSON.stringify(infos), snapshot);
 });
 
 console.log(`\n结果：通过 ${passed} 项，失败 ${failures.length} 项`);
