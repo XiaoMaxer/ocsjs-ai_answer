@@ -25,6 +25,7 @@ import {
 	simplifyWorkResult,
 	updateDynamicResult
 } from '../utils/work';
+import { shouldDeferRandomFallbackToPlatform } from '../utils/ai-answerer';
 import { $console, BackgroundProject } from './background';
 import { $msgwc, CommonWorkOptions, playMedia } from '../utils';
 import { createSteps } from '../utils/ui';
@@ -2102,7 +2103,9 @@ const JobRunner = {
 					return { text: optResults.map((r) => r.text).join('\n'), images: optResults.flatMap((r) => r.images) };
 				},
 				answererWrappers,
-				period
+				period,
+				// 超星随机选择/随机填空开启时，AI 兜底让位给平台随机逻辑
+				deferRandomFallback: (ctx) => shouldDeferRandomFallbackToPlatform(ctx.type, CommonProject.scripts.settings.cfg)
 			}),
 
 			work: async (ctx) => {

@@ -22,7 +22,6 @@ import {
 	isAnswererWrappersSupportImageOptimize
 } from './answerer-env';
 import { applyAIUncertainFallback } from './ai-answerer';
-
 // 重新导出，保持对外 API 不变（common.ts / exploration.ts 等仍从本文件导入）
 export {
 	buildAnswererEnv,
@@ -583,6 +582,11 @@ export function createCommonAnswerer(options: {
 	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
 	answererWrappers: AnswererWrapper[];
 	period?: number;
+	/**
+	 * 是否将随机兜底让位给平台自身的随机逻辑（如超星随机选择/随机填空）。
+	 * 返回 true 时本平台负责随机作答，AI 不再生成随机兜底答案。
+	 */
+	deferRandomFallback?: (ctx: WorkContext<any>) => boolean;
 }) {
 	const normalize = (
 		v: string | { text: string; images?: string[] } | undefined
@@ -598,6 +602,7 @@ export function createCommonAnswerer(options: {
 	/** AI 无法确定时的兜底提示每次会话仅提示一次 */
 	let aiBankFallbackWarned = false;
 	let aiRandomFallbackWarned = false;
+	let aiDeferRandomWarned = false;
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
 		const titleResult = normalize(options.titleTransform(elements, ctx));
@@ -666,6 +671,8 @@ export function createCommonAnswerer(options: {
 
 			// AI 无法确定答案时的兜底：禁止直接提交不确定答案 → 优先题库 → 题库也没有则随机兜底
 			const cfg = CommonProject.scripts.settings.cfg;
+			// 平台显式开启随机作答时让位（当前仅超星），避免与平台随机逻辑重叠
+			const deferred = options.deferRandomFallback?.(ctx) ?? false;
 			const fallback = applyAIUncertainFallback(searchInfos, {
 				type: ctx.type,
 				title,
@@ -673,8 +680,13 @@ export function createCommonAnswerer(options: {
 				completionTexts: String(cfg['randomWork-completeTexts-textarea'] ?? '')
 					.split('\n')
 					.filter(Boolean),
-				enabled: cfg.aiSearchFallbackRandom !== false
+				enabled: cfg.aiSearchFallbackRandom !== false && !deferred,
+				deferred
 			});
+			if (deferred && fallback.uncertain && !fallback.usedBank && !aiDeferRandomWarned) {
+				aiDeferRandomWarned = true;
+				$console.log('检测到超星随机选择/随机填空已开启，本题交由平台随机逻辑处理。');
+			}
 			if (fallback.usedBank && !aiBankFallbackWarned) {
 				aiBankFallbackWarned = true;
 				$message.warn({

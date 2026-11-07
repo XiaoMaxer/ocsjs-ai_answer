@@ -97,6 +97,23 @@ export interface AIUncertainFallbackResult {
 	usedRandom: boolean;
 	/** 随机兜底的答案（usedRandom 为 true 时有值） */
 	randomAnswer?: string;
+	/** 本次是否检测到 AI 不确定回答 */
+	uncertain: boolean;
+}
+
+/**
+ * 判断是否应把随机兜底让位给平台自带随机逻辑（当前仅超星支持）。
+ * 优先级：题库答案 > 平台随机（用户显式开启） > AI 随机兜底。
+ */
+export function shouldDeferRandomFallbackToPlatform(type: string | undefined, cfg: Record<string, any>): boolean {
+	if (!type) return false;
+	if (cfg['randomWork-choice'] && (type === 'single' || type === 'multiple' || type === 'judgement')) {
+		return true;
+	}
+	if (cfg['randomWork-complete'] && type === 'completion') {
+		return true;
+	}
+	return false;
 }
 
 /**
@@ -116,6 +133,8 @@ export function applyAIUncertainFallback(
 		completionTexts?: string[];
 		/** 是否允许随机兜底 */
 		enabled: boolean;
+		/** 是否已交由平台自身的随机逻辑（如超星随机选择/随机填空）处理 */
+		deferred?: boolean;
 		/** 注入随机数生成器，便于测试 */
 		random?: () => number;
 	}
@@ -128,7 +147,7 @@ export function applyAIUncertainFallback(
 		(info) => isAIInfo(info) && info.results?.some((result) => isUncertain(result))
 	);
 	if (!uncertainInfos.length) {
-		return { usedBank: false, usedRandom: false };
+		return { usedBank: false, usedRandom: false, uncertain: false };
 	}
 
 	const bankHasAnswer = searchInfos.some(
@@ -142,16 +161,18 @@ export function applyAIUncertainFallback(
 			'AI 无法确定该题答案' +
 			(bankHasAnswer
 				? '，已改用题库答案。'
+				: options.deferred
+				? '，题库也无答案，已交由平台随机作答（如超星随机选择/随机填空）。'
 				: options.enabled
 				? '，题库也无答案，已启用随机答案兜底。'
 				: '，题库也无答案，本题将留空不答。');
 	}
 
 	if (bankHasAnswer) {
-		return { usedBank: true, usedRandom: false };
+		return { usedBank: true, usedRandom: false, uncertain: true };
 	}
 	if (!options.enabled) {
-		return { usedBank: false, usedRandom: false };
+		return { usedBank: false, usedRandom: false, uncertain: true };
 	}
 
 	const randomAnswer = createRandomFallbackAnswer({
@@ -161,7 +182,7 @@ export function applyAIUncertainFallback(
 		random: options.random
 	});
 	if (!randomAnswer) {
-		return { usedBank: false, usedRandom: false };
+		return { usedBank: false, usedRandom: false, uncertain: true };
 	}
 
 	searchInfos.push({
@@ -177,7 +198,7 @@ export function applyAIUncertainFallback(
 		]
 	});
 
-	return { usedBank: false, usedRandom: true, randomAnswer };
+	return { usedBank: false, usedRandom: true, randomAnswer, uncertain: true };
 }
 
 /** 默认系统提示词：要求模型只输出可直接用于选项匹配的最终答案 */

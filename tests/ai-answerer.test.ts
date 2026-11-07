@@ -13,7 +13,8 @@ import {
 	readAISearchConfig,
 	isAIUncertainAnswer,
 	createRandomFallbackAnswer,
-	applyAIUncertainFallback
+	applyAIUncertainFallback,
+	shouldDeferRandomFallbackToPlatform
 } from '../packages/scripts/src/utils/ai-answerer';
 
 /** 测试专用占位值：刻意不使用真实密钥格式，避免被误认为泄露或触发密钥扫描 */
@@ -443,6 +444,105 @@ test('正常 AI 答案与原有题库结果完全不受兜底逻辑影响', () =
 	assert.equal(result.usedBank, false);
 	assert.equal(result.usedRandom, false);
 	assert.equal(JSON.stringify(infos), snapshot);
+});
+
+console.log(`\n[6] 与超星随机功能的优先级（方案 A）`);
+
+test('未开启超星随机时不让位', () => {
+	const cfg = {};
+	['single', 'multiple', 'judgement', 'completion'].forEach((type) => {
+		assert.equal(shouldDeferRandomFallbackToPlatform(type, cfg), false, type + ' 不应让位');
+	});
+	assert.equal(shouldDeferRandomFallbackToPlatform(undefined, cfg), false, '缺少题型时不让位');
+});
+
+test('开启「随机选择」时选择题让位，填空题不让位', () => {
+	const cfg = { 'randomWork-choice': true };
+	assert.equal(shouldDeferRandomFallbackToPlatform('single', cfg), true);
+	assert.equal(shouldDeferRandomFallbackToPlatform('multiple', cfg), true);
+	assert.equal(shouldDeferRandomFallbackToPlatform('judgement', cfg), true);
+	assert.equal(shouldDeferRandomFallbackToPlatform('completion', cfg), false);
+});
+
+test('开启「随机填空」时填空题让位，选择题不让位', () => {
+	const cfg = { 'randomWork-complete': true };
+	assert.equal(shouldDeferRandomFallbackToPlatform('completion', cfg), true);
+	assert.equal(shouldDeferRandomFallbackToPlatform('single', cfg), false);
+	assert.equal(shouldDeferRandomFallbackToPlatform('multiple', cfg), false);
+	assert.equal(shouldDeferRandomFallbackToPlatform('judgement', cfg), false);
+});
+
+test('两个随机开关同时开启时全部题型让位', () => {
+	const cfg = { 'randomWork-choice': true, 'randomWork-complete': true };
+	['single', 'multiple', 'judgement', 'completion'].forEach((type) => {
+		assert.equal(shouldDeferRandomFallbackToPlatform(type, cfg), true, type + ' 应让位');
+	});
+});
+
+test('让位时不生成随机答案，并提示交由平台随机作答', () => {
+	const infos: any[] = [
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: '无法确定', extra_data: { ai: true, uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, {
+		type: 'single',
+		title: '题目',
+		optionCount: 4,
+		enabled: false,
+		deferred: true
+	});
+	assert.equal(result.usedBank, false);
+	assert.equal(result.usedRandom, false);
+	assert.equal(result.uncertain, true);
+	assert.equal(infos.length, 1, '不新增随机兜底条目');
+	assert.equal(infos[0].results.length, 0, '不确定答案被剔除');
+	assert.match(infos[0].error, /交由平台随机作答/);
+	assert.equal(infos[0].error.includes('随机答案兜底'), false, '不应提示 AI 随机兜底');
+});
+
+test('让位时题库有答案仍优先使用题库（最高优先级）', () => {
+	const infos: any[] = [
+		{ name: '言溪题库', results: [{ question: '题目', answer: 'B' }] },
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: 'AI无法确定', extra_data: { ai: true, uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, {
+		type: 'single',
+		optionCount: 4,
+		enabled: false,
+		deferred: true
+	});
+	assert.equal(result.usedBank, true);
+	assert.equal(result.usedRandom, false);
+	assert.equal(infos[1].results.length, 0);
+	assert.match(infos[1].error, /已改用题库答案/);
+	assert.equal(infos.length, 2);
+});
+
+test('未让位且兜底开启时仍保留 AI 随机兜底（原行为不变）', () => {
+	const infos: any[] = [
+		{
+			name: AI_SEARCH_ANSWERER_NAME,
+			results: [{ question: undefined, answer: '无法确定', extra_data: { ai: true, uncertain: true } }]
+		}
+	];
+	const result = applyAIUncertainFallback(infos, {
+		type: 'single',
+		title: '题目',
+		optionCount: 4,
+		enabled: true,
+		deferred: false,
+		random: () => 0
+	});
+	assert.equal(result.usedRandom, true);
+	assert.equal(result.randomAnswer, 'A');
+	assert.equal(infos.length, 2);
+	assert.match(infos[0].error, /随机答案兜底/);
+	assert.equal(infos[1].name, AI_RANDOM_FALLBACK_NAME);
 });
 
 console.log(`\n结果：通过 ${passed} 项，失败 ${failures.length} 项`);
