@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.3.3](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.3) (2026-11-07)
+
+### 🐛 问题修复
+
+* 修复章节测验/作业答题可能永久卡死的问题：搜题链路中「图片转 base64」「跨帧题库缓存查询」「单题搜题」均缺少超时保护，单题卡住会导致整个 doWork 永远不返回（表现为停在答题界面、需手动刷新才能恢复）。现已为上述环节分别加上 30s / 10s / 90s 兜底超时，超时后按搜题失败处理并继续下一题
+
 ## [5.3.2](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.2) (2026-11-07)
 
 ### 🐛 问题修复

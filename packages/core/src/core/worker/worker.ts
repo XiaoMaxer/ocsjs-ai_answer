@@ -224,7 +224,21 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 					console.log('ctx', result.ctx);
 				}
 
-				ctx.searchInfos = (await this.opts.answerer(ctx.elements, ctx)) || [];
+				/**
+				 * 单题搜题外层兜底超时：answerer 内部（图片转 base64、跨帧缓存查询等）
+				 * 可能存在无超时的 await，导致单个题目永远挂起、整个 doWork 无法结束。
+				 * 这里用 Promise.race 加一层硬超时，超时后按搜题失败处理，保证 worker 能继续后续题目。
+				 * 超时阈值取全局题库超时 + 30s（给图片下载等额外步骤留出余量）。
+				 */
+				const answererTimeoutMs = Math.max(60, (AnswerWrapperHandlerConfig.timeout_seconds ?? 60) + 30) * 1000;
+				const answererPromise = this.opts.answerer(ctx.elements, ctx);
+				const answererResult = await Promise.race([
+					answererPromise,
+					new Promise<never>((resolve, reject) =>
+						setTimeout(() => reject(new Error('单题搜题超时，已跳过此题。')), answererTimeoutMs)
+					)
+				]);
+				ctx.searchInfos = answererResult || [];
 
 				// 答案为 undefined 的情况， 需要赋值给一个空字符串，因为可能传回的题目中带有其他提示信息，或者题目里包含答案。
 				ctx.searchInfos.forEach((info) => {

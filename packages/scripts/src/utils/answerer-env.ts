@@ -86,14 +86,34 @@ export function imageToBase64(source: string | HTMLImageElement): Promise<string
 	return convertImageToBase64(source);
 }
 
+/** 图片转 base64 单图超时（毫秒）：图片加载/GM 请求无内建超时，需外层兜底避免整题挂起 */
+const IMAGE_TO_BASE64_TIMEOUT_MS = 30_000;
+
 /** 实际的图片转 base64 实现（不经过缓存，由 {@link imageToBase64} 调用） */
 function convertImageToBase64(source: string | HTMLImageElement): Promise<string> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		const finish = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			fn();
+		};
+		// 统一超时：无论走 Canvas 还是 GM 回退，超时后直接 reject，避免单图卡死整条搜题链路
+		const timer = setTimeout(() => finish(() => reject(new Error('图片转 base64 超时'))), IMAGE_TO_BASE64_TIMEOUT_MS);
+		const done = (value: string) => {
+			clearTimeout(timer);
+			finish(() => resolve(value));
+		};
+		const fail = (err: any) => {
+			clearTimeout(timer);
+			finish(() => reject(err));
+		};
+
 		// 如果是 HTMLImageElement，直接用 Canvas 绘制转换
 		if (typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement) {
 			// 已经是 data URL，直接返回
 			if (source.src.startsWith('data:')) {
-				resolve(source.src);
+				done(source.src);
 				return;
 			}
 			try {
@@ -103,7 +123,7 @@ function convertImageToBase64(source: string | HTMLImageElement): Promise<string
 				const ctx = canvas.getContext('2d')!;
 				ctx.drawImage(source, 0, 0);
 				const dataUrl = canvas.toDataURL('image/png');
-				resolve(dataUrl);
+				done(dataUrl);
 				return;
 			} catch {
 				// Canvas 被污染（跨域无 CORS），回退到 GM_xmlhttpRequest
@@ -115,13 +135,13 @@ function convertImageToBase64(source: string | HTMLImageElement): Promise<string
 
 		// 已经是 data URL，直接返回
 		if (url.startsWith('data:')) {
-			resolve(url);
+			done(url);
 			return;
 		}
 
 		// Node 环境：直接拉取图片字节转 base64
 		if (isNodeEnv()) {
-			nodeFetchToBase64(url).then(resolve, reject);
+			nodeFetchToBase64(url).then(done, fail);
 			return;
 		}
 
@@ -135,15 +155,15 @@ function convertImageToBase64(source: string | HTMLImageElement): Promise<string
 				canvas.height = img.naturalHeight;
 				const ctx = canvas.getContext('2d')!;
 				ctx.drawImage(img, 0, 0);
-				resolve(canvas.toDataURL('image/png'));
+				done(canvas.toDataURL('image/png'));
 			} catch {
 				// Canvas 失败，回退到 GM_xmlhttpRequest
-				gmXmlHttpRequestFallback(url, resolve, reject);
+				gmXmlHttpRequestFallback(url, done, fail);
 			}
 		};
 		img.onerror = () => {
 			// 图片加载失败（CORS 阻止），回退到 GM_xmlhttpRequest
-			gmXmlHttpRequestFallback(url, resolve, reject);
+			gmXmlHttpRequestFallback(url, done, fail);
 		};
 		img.src = url;
 	});

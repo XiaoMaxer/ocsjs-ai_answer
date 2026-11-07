@@ -383,16 +383,28 @@ export const BackgroundProject = Project.create({
 						}
 
 						// cors.defineTopFunction 在非 GM 环境为空操作（noop），降级为本地查询；
-						// iframe 内调用经 cors 路由到顶层帧查询（缓存本体仅存于顶层帧内存）
-						const results: SearchInformation[] =
-							$gm.isInGMContext() === false
-								? findInLocalQuestionCaches(title)
-								: JSON.parse(((await questionCacheTopStore.search(title)) as string) || '[]');
+						// iframe 内调用经 cors 路由到顶层帧查询（缓存本体仅存于顶层帧内存）。
+						// cors 通讯（GM_setValue 监听）若因脚本管理器状态异常未回写，会导致 await 永久挂起，
+						// 这里加一层超时保护：超时后视为缓存未命中，回退到实时搜题。
+						const CACHE_SEARCH_TIMEOUT_MS = 10_000;
+						let cacheResults: SearchInformation[] = [];
+						try {
+							const cacheRaw: string = await (Promise.race([
+								questionCacheTopStore.search(title),
+								new Promise<string>((resolve, reject) =>
+									setTimeout(() => reject(new Error('题库缓存查询超时')), CACHE_SEARCH_TIMEOUT_MS)
+								)
+							]) as Promise<string>);
+							cacheResults = JSON.parse(cacheRaw || '[]');
+						} catch {
+							// 超时或解析失败：降级为实时搜题，不阻塞答题
+							cacheResults = [];
+						}
 
-						if (results.length === 0) {
+						if (cacheResults.length === 0) {
 							return await whenSearchEmpty();
 						}
-						return results;
+						return cacheResults;
 					},
 					/**
 					 * 展示题库缓存管理弹窗
