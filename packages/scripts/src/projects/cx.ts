@@ -9,7 +9,8 @@ import {
 	splitAnswer,
 	domSearch,
 	domSearchAll,
-	SearchInformation
+	SearchInformation,
+	defaultAnswerWrapperHandler
 } from '@ocsjs/core';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle, loadRefTable } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
@@ -66,7 +67,7 @@ const state = {
 	}
 };
 
-type VideoQuizStrategy = 'random' | 'ignore';
+type VideoQuizStrategy = 'ai' | 'random' | 'ignore';
 
 type Attachment = {
 	/** 只有当 module 为 音视频（并且已经播放完成）时才会有这个属性 */
@@ -93,6 +94,126 @@ type Job = {
 	attachment: Attachment;
 	func: { (): Promise<void> } | undefined;
 };
+
+/** 归一化文本：去除标点、空格、全角半角差异，用于答案匹配 */
+function normalizeVideoQuizText(text: string): string {
+	return String(text ?? '')
+		.replace(/^[A-Z][.、\s)）]+/i, '')
+		.replace(/[。.!！?？"'“”‘’\s,，、:：;；（）()【】[\]]/g, '')
+		.trim()
+		.toLowerCase();
+}
+
+/**
+ * 从答案文本中提取选项字母（A/B/C/D…），找不到返回 -1
+ */
+function extractAnswerLetter(answer: string): number {
+	const m = String(answer ?? '').match(/[A-D]/i);
+	return m ? m[0].toUpperCase().charCodeAt(0) - 65 : -1;
+}
+
+/**
+ * 在选项列表中匹配答案，返回命中的选项索引；未命中返回 -1。
+ * 匹配顺序：字母定位 → 归一化精确匹配 → 子串包含匹配
+ */
+function matchVideoQuizOption(answer: string, optionTexts: string[]): number {
+	const normalizedOptions = optionTexts.map(normalizeVideoQuizText);
+	const normalizedAnswer = normalizeVideoQuizText(answer);
+
+	// 1. 纯字母答案直接定位
+	const letterIdx = extractAnswerLetter(answer);
+	if (letterIdx >= 0 && letterIdx < optionTexts.length) {
+		return letterIdx;
+	}
+
+	// 2. 归一化精确匹配
+	const exactIdx = normalizedOptions.findIndex((o) => o === normalizedAnswer);
+	if (exactIdx !== -1) return exactIdx;
+
+	// 3. 子串包含匹配（答案包含于选项，或选项包含于答案）
+	const subIdx = normalizedOptions.findIndex(
+		(o) => !!o && !!normalizedAnswer && (o.includes(normalizedAnswer) || normalizedAnswer.includes(o))
+	);
+	if (subIdx !== -1) return subIdx;
+
+	return -1;
+}
+
+/**
+ * 视频内题目 AI 搜题答题。
+ * 1. 提取题干与选项文本；
+ * 2. 调用已配置的题库/大模型搜索答案；
+ * 3. 匹配并点击对应选项后提交；
+ * 4. 若答错（页面仍允许重试并给出正确答案），尝试识别正确答案后再次提交。
+ */
+async function answerVideoQuizWithAI(doc: Document) {
+	const wrappers = CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers;
+	const optionLabels = Array.from(doc.querySelectorAll<HTMLElement>('.ans-videoquiz-opt label'));
+	const submitBtn = doc.querySelector<HTMLElement>('#videoquiz-submit');
+	if (!optionLabels.length || !submitBtn) return;
+
+	// 提取题干：题目容器文本减去选项与按钮文本
+	const quizContainer = doc.querySelector<HTMLElement>('#video .ans-videoquiz') ?? doc.body;
+	const optionTexts = optionLabels.map((o) => o.innerText.trim());
+	const title = quizContainer.innerText
+		.replace(optionTexts.join('\n'), '')
+		.replace(submitBtn.innerText, '')
+		.replace(/\n{2,}/g, '\n')
+		.trim();
+
+	let targetIndex = -1;
+	try {
+		if (wrappers.length > 0) {
+			const searchInfos = await defaultAnswerWrapperHandler(wrappers, {
+				title,
+				options: optionTexts.join('\n'),
+				type: 'single'
+			});
+			const answers = searchInfos.map((i) => i.results?.map((r) => r.answer).filter(Boolean) ?? []).flat() as string[];
+			for (const ans of answers) {
+				const idx = matchVideoQuizOption(String(ans), optionTexts);
+				if (idx !== -1) {
+					targetIndex = idx;
+					break;
+				}
+			}
+		}
+	} catch (e) {
+		$console.warn('视频题 AI 搜题失败，改用随机作答：', e);
+	}
+
+	// 未匹配到答案时随机选一个
+	if (targetIndex === -1) {
+		targetIndex = Math.floor(Math.random() * optionLabels.length);
+	}
+
+	optionLabels[targetIndex]?.click();
+	submitBtn.click();
+	await $.sleep(3000);
+
+	// 答错重试：若提交按钮仍存在（说明还有答题机会），尝试识别正确答案
+	const stillHasSubmit = doc.querySelector<HTMLElement>('#videoquiz-submit');
+	if (stillHasSubmit) {
+		// 正确选项通常带有正确/对错标识，优先点击带正确样式的选项
+		const correctOpt =
+			Array.from(doc.querySelectorAll<HTMLElement>('.ans-videoquiz-opt label')).find((o) => {
+				const cls = (o.className + ' ' + (o.parentElement?.className ?? '')).toLowerCase();
+				return /correct|right|true|ok|正确|对/.test(cls);
+			}) ?? optionLabels.find((o) => /正确|对|√/i.test(o.innerText));
+
+		if (correctOpt) {
+			correctOpt.click();
+			stillHasSubmit.click();
+			await $.sleep(3000);
+		} else {
+			// 无正确标识时，换一个未选过的选项重试
+			const fallback = optionLabels.find((_, i) => i !== targetIndex);
+			fallback?.click();
+			stillHasSubmit.click();
+			await $.sleep(3000);
+		}
+	}
+}
 
 export const CXProject = Project.create({
 	name: '超星学习通',
@@ -231,12 +352,13 @@ export const CXProject = Project.create({
 					label: '视频内题目',
 					tag: 'select',
 					options: [
+						['ai', 'AI 搜题答题'],
 						['random', '随机答题'],
 						['ignore', '忽略']
 					],
 					attrs: {
 						title:
-							'视频有时在学习过程中会弹出题目，这个好像并不计算在分数内，所以可以忽略，视频可以正常观看，这里提供几个方法处理题目'
+							'视频有时在学习过程中会弹出题目，这个好像并不计算在分数内，所以可以忽略，视频可以正常观看，这里提供几个方法处理题目。AI 搜题会调用已配置的题库/大模型作答，答错后会尝试根据正确答案重试。'
 					},
 					defaultValue: 'random' as VideoQuizStrategy
 				},
@@ -1893,16 +2015,21 @@ const JobRunner = {
 		// 固定视频进度
 		fixedVideoProgress();
 
-		// 随机作答视频内题目
-		if (setting.videoQuizStrategy === 'random') {
+		// 视频内题目处理
+		if (setting.videoQuizStrategy !== 'ignore') {
 			const loop = async () => {
 				const submitBtn = () => doc.querySelector<HTMLElement>('#videoquiz-submit');
 				if (submitBtn()) {
-					const list = Array.from(doc.querySelectorAll<HTMLElement>('.ans-videoquiz-opt label'));
-					const answer = list[Math.floor(Math.random() * list.length)];
-					answer?.click();
-					submitBtn()?.click();
-					await $.sleep(3000);
+					if (setting.videoQuizStrategy === 'ai') {
+						await answerVideoQuizWithAI(doc);
+					} else {
+						// 随机答题
+						const list = Array.from(doc.querySelectorAll<HTMLElement>('.ans-videoquiz-opt label'));
+						const answer = list[Math.floor(Math.random() * list.length)];
+						answer?.click();
+						submitBtn()?.click();
+						await $.sleep(3000);
+					}
 					// 隐藏视频内题目元素
 					const container = doc.querySelector<HTMLElement>('#video .ans-videoquiz');
 					const components = Array.from(doc.querySelectorAll<HTMLElement>('.x-component-default'));

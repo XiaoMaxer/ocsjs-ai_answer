@@ -12,6 +12,10 @@ const SNAP_ANIMATION_MS = 250;
 const EDGE_CLASS = 'edge-minimize';
 const SIDE_CLASSES = ['edge-left', 'edge-right'] as const;
 const SNAP_ANIM_CLASS = 'edge-snapping';
+/** 左侧贴边图标静置后自动隐藏的类名 */
+const AUTO_HIDDEN_CLASS = 'edge-auto-hidden';
+/** 左侧贴边图标静置多少毫秒后自动隐藏 */
+const AUTO_HIDE_DELAY = 5000;
 
 /** 程序化吸附进行中：防止 setPosition 触发的 x 配置回调重入 */
 let snapping = false;
@@ -19,9 +23,38 @@ let snapping = false;
 let headerDragging = false;
 /** 拖放高亮区域元素 */
 let dropZone: HTMLElement | undefined;
+/** 左侧贴边自动隐藏的定时器 id */
+let autoHideTimer: ReturnType<typeof setTimeout> | undefined;
+/** 鼠标是否处于左侧 100px 感应区内（用于自动隐藏的进入/离开判定） */
+let mouseInLeftZone = false;
 
 function getContainer(): HTMLElement | undefined {
 	return $elements.root?.querySelector<HTMLElement>('container-element') ?? undefined;
+}
+
+/** 取消左侧贴边自动隐藏定时器并立即显示图标 */
+function cancelAutoHide() {
+	if (autoHideTimer) {
+		clearTimeout(autoHideTimer);
+		autoHideTimer = undefined;
+	}
+	getContainer()?.classList.remove(AUTO_HIDDEN_CLASS);
+}
+
+/**
+ * 左侧贴边图标静置 AUTO_HIDE_DELAY 后自动透明隐藏。
+ * 仅在当前为 edge-left 最小化状态时生效；其他状态调用等同取消。
+ */
+function scheduleAutoHide() {
+	cancelAutoHide();
+	const container = getContainer();
+	if (!container || !container.classList.contains(EDGE_CLASS) || !container.classList.contains('edge-left')) {
+		return;
+	}
+	autoHideTimer = setTimeout(() => {
+		container.classList.add(AUTO_HIDDEN_CLASS);
+		autoHideTimer = undefined;
+	}, AUTO_HIDE_DELAY);
 }
 
 /**
@@ -68,6 +101,13 @@ export function updateEdgeMode() {
 		}
 	} else {
 		container.classList.remove(EDGE_CLASS, ...SIDE_CLASSES);
+	}
+
+	// 左侧贴边时启动 5s 自动隐藏计时，其他状态取消并立即显示
+	if (side === 'left') {
+		scheduleAutoHide();
+	} else {
+		cancelAutoHide();
 	}
 }
 
@@ -131,6 +171,8 @@ function enableIconDraggable(icon: HTMLElement, container: HTMLElement) {
 	icon.addEventListener('pointerdown', (e) => {
 		e.preventDefault();
 		e.stopPropagation();
+		// 与图标交互时立即取消自动隐藏，保证拖动/点击过程中图标始终可见
+		cancelAutoHide();
 		const startX = e.clientX;
 		const startY = e.clientY;
 		const startTop = container.offsetTop;
@@ -209,6 +251,16 @@ export function initEdgeMinimize(retry = 3) {
 	});
 	document.addEventListener('pointermove', (e) => {
 		if (headerDragging) updateDropZone(e.clientX);
+		// 左侧贴边自动隐藏：鼠标进入左侧 100px 感应区时显示图标，离开时重新计时
+		const inLeft = e.clientX <= EDGE_WIDTH;
+		if (inLeft !== mouseInLeftZone) {
+			mouseInLeftZone = inLeft;
+			if (inLeft) {
+				cancelAutoHide();
+			} else {
+				scheduleAutoHide();
+			}
+		}
 	});
 	document.addEventListener('pointerup', () => {
 		if (headerDragging) {
