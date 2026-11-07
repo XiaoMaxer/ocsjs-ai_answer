@@ -37,13 +37,15 @@
 ### 方式一：直接安装（推荐）
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或 ScriptCat
-2. 在 [Releases](../../releases) 下载：
+2. 在 [Releases](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/latest) 下载：
    - `ocs.common.user.js` —— 全域名通用版，**推荐**，大模型接口任意域名可跨域
    - `ocs.user.js` —— 官方域名版，使用自定义 AI 域名需在脚本头部补充 `@connect`
 3. 打开脚本管理器 → 新建脚本 → 粘贴内容（或拖入文件）→ `Ctrl+S` 保存
 4. 打开受支持的网课页面（超星、智慧树、职教云、中国大学 MOOC、雨课堂等），左侧出现 OCS 悬浮窗即安装成功
 
 > 不要安装 `ocs.meta.js`（仅更新元数据）或 `ocs.dev.user.js`（开发版，依赖本地文件）。
+
+> 当前发布版本：**v5.3.1**，安装包见 [Releases](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/latest)。
 
 ### 方式二：本地构建
 
