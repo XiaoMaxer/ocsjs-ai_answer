@@ -673,7 +673,7 @@ export function createCommonAnswerer(options: {
 				completionTexts: String(cfg['randomWork-completeTexts-textarea'] ?? '')
 					.split('\n')
 					.filter(Boolean),
-				enabled: cfg['aiSearchFallbackRandom'] !== false
+				enabled: cfg.aiSearchFallbackRandom !== false
 			});
 			if (fallback.usedBank && !aiBankFallbackWarned) {
 				aiBankFallbackWarned = true;

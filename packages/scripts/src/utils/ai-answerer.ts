@@ -387,7 +387,8 @@ function createResponseHandler(): string {
 	var fail = function (msg) { throw new Error('AI 搜题失败：' + msg); };
 	var data = res;
 	if (typeof data === 'string') {
-		try { data = JSON.parse(data); } catch (e) { fail('接口返回格式异常（内容不是 JSON，请确认接口地址是否为 OpenAI 兼容的 chat/completions 接口）'); }
+		try { data = JSON.parse(data); }
+		catch (e) { fail('接口返回格式异常（内容不是 JSON，请确认接口地址为 OpenAI 兼容格式）'); }
 	}
 	if (!data || typeof data !== 'object') { fail('接口返回格式异常'); }
 	if (data.error) {
@@ -408,16 +409,23 @@ function createResponseHandler(): string {
 		var message = choice.message || choice.delta || {};
 		content = message.content;
 		if (content === undefined || content === null) { content = choice.text; }
-		if ((content === undefined || content === null) && typeof message.refusal === 'string') { content = message.refusal; }
+		if ((content === undefined || content === null) && typeof message.refusal === 'string') {
+			content = message.refusal;
+		}
 	}
 	if (content === undefined || content === null || content === '') {
 		content = data.output_text || data.answer || data.content || data.response;
 	}
 	if (Array.isArray(content)) {
-		content = content.map(function (part) { return (part && (part.text || part.content)) || ''; }).join('');
+		content = content
+			.map(function (part) { return (part && (part.text || part.content)) || ''; })
+			.join('');
 	}
 	if (typeof content !== 'string' || !content.trim()) { fail('接口返回格式异常（未找到回答内容，请确认接口为 OpenAI 兼容格式）'); }
-	var normalized = content.trim().replace(/^答案\\s*[:：]\\s*/i, '').replace(/^AI\\s*[:：]?\\s*/i, '').replace(/[。.!！?？"'“”‘’\\s]/g, '');
+	var normalized = content.trim()
+		.replace(/^答案\\s*[:：]\\s*/i, '')
+		.replace(/^AI\\s*[:：]?\\s*/i, '')
+		.replace(/[。.!！?？"'“”‘’\\s]/g, '');
 	var uncertain = /^(无法确定|不确定|无法回答|无法判断|不能确定|不知道|未知|无答案|无法作答)$/i.test(normalized);
 	return [undefined, content.trim(), { ai: true, uncertain: uncertain }];
 }`;
@@ -432,7 +440,7 @@ export function createAIAnswererWrapper(config: AISearchConfig): AnswererWrapper
 	if (!validation.ok) return undefined;
 
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-	if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
+	if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
 	return {
 		name: AI_SEARCH_ANSWERER_NAME,
