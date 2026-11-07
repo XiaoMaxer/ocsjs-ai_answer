@@ -1,6 +1,63 @@
 import debounce from 'lodash/debounce';
 
 /**
+ * Web Worker 源码（内联为字符串，通过 Blob URL 加载）。
+ * 后台标签页中主线程 setTimeout 会被浏览器节流（5 分钟后间隔至少 1 分钟），
+ * 而 Worker 内部的定时器不受此限制，可保证最小化/切屏时延迟仍按设定值执行。
+ */
+const SLEEP_WORKER_SOURCE = `
+self.onmessage = function (e) {
+	var data = e.data || {};
+	var id = data.id;
+	var delay = Number(data.delay) || 0;
+	setTimeout(function () {
+		self.postMessage({ id: id });
+	}, delay);
+};
+`;
+
+/** 单例 sleep worker 及其待解析回调表；Worker 创建失败时为 undefined，此时退化为主线程 setTimeout */
+let sleepWorker: Worker | undefined;
+const sleepResolvers = new Map<number, () => void>();
+let sleepWorkerInitTried = false;
+let sleepSeq = 0;
+
+/**
+ * 懒加载 sleep worker。仅在浏览器环境尝试创建；创建失败（如 CSP 禁止 Blob Worker）则保持 undefined。
+ */
+function getSleepWorker(): Worker | undefined {
+	if (sleepWorkerInitTried) return sleepWorker;
+	sleepWorkerInitTried = true;
+	if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+		return undefined;
+	}
+	try {
+		const blob = new Blob([SLEEP_WORKER_SOURCE], { type: 'application/javascript' });
+		const url = URL.createObjectURL(blob);
+		const worker = new Worker(url);
+		worker.onmessage = (e: MessageEvent) => {
+			const id = e.data?.id as number | undefined;
+			if (id !== undefined) {
+				const resolve = sleepResolvers.get(id);
+				if (resolve) {
+					sleepResolvers.delete(id);
+					resolve();
+				}
+			}
+		};
+		worker.onerror = () => {
+			// Worker 出错时不再使用，后续 sleep 退化为 setTimeout
+			sleepWorker = undefined;
+		};
+		sleepWorker = worker;
+		return worker;
+	} catch {
+		sleepWorker = undefined;
+		return undefined;
+	}
+}
+
+/**
  * 公共的工具库
  */
 export const $ = {
@@ -24,11 +81,24 @@ export const $ = {
 
 	/**
 	 * 暂停
+	 *
+	 * 优先使用 Web Worker 定时器：后台标签页中主线程 setTimeout 会被浏览器节流，
+	 * 而 Worker 内部定时器不受影响，可保证最小化/切屏时延迟仍按设定值执行。
+	 * 非浏览器环境或 Worker 不可用时退化为普通 setTimeout。
+	 *
 	 * @param period 毫秒
 	 */
 	async sleep(period: number): Promise<void> {
-		return new Promise((resolve) => {
-			setTimeout(resolve, period);
+		const worker = getSleepWorker();
+		if (!worker) {
+			return new Promise((resolve) => {
+				setTimeout(resolve, period);
+			});
+		}
+		return new Promise<void>((resolve) => {
+			const id = ++sleepSeq;
+			sleepResolvers.set(id, resolve);
+			worker.postMessage({ id, delay: period });
 		});
 	},
 

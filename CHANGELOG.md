@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.3.5](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.5) (2026-11-07)
+
+### ⚡ 优化改进
+
+* `$.sleep` 改用 Web Worker 定时器：后台标签页中主线程 `setTimeout` 会被浏览器节流（5 分钟后间隔至少 1 分钟），而 Worker 内部定时器不受此限制。最小化/切屏时搜题间隔、答题延迟等仍按设定值执行，不再被拖慢。非浏览器环境或 Worker 不可用时自动退化为普通 `setTimeout`
+
 ## [5.3.4](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.4) (2026-11-07)
 
 ### ⚡ 优化改进
