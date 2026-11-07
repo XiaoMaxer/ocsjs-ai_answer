@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.4](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.4) (2026-11-07)
+
+### ⚡ 优化改进
+
+* 「最小化/切屏」警告支持在设置中开关关闭，并在回到前台时自动清除（此前一旦弹出会一直残留）
+* 切到后台时自动静音正在播放的视频，避免浏览器暂停后台未静音视频；回到前台后恢复原静音状态
+
 ## [5.3.3](https://github.com/XiaoMaxer/ocsjs-ai_answer/releases/tag/v5.3.3) (2026-11-07)
 
 ### 🐛 问题修复

@@ -1197,6 +1197,15 @@ export const CommonProject = Project.create({
 						};
 						return btn;
 					}
+				},
+				enableVisibilityWarning: {
+					label: '最小化/切屏警告',
+					defaultValue: true,
+					attrs: {
+						type: 'checkbox',
+						title:
+							'浏览器最小化或切到后台时，浏览器会节流定时器并暂停未静音视频，可能影响脚本运行。关闭后不再弹出此警告（建议同时保留页面在前台以保证稳定）。'
+					}
 				}
 			},
 			methods() {

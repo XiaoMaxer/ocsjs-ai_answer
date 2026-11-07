@@ -1320,16 +1320,52 @@ export const BackgroundProject = Project.create({
 				let messageElement: MessageElement | undefined;
 				visibleDetect();
 
+				/** 切到后台时静音页面中正在播放的视频，避免浏览器暂停后台未静音视频；回到前台时恢复静音状态 */
+				function handleVideosVisibility(hidden: boolean) {
+					const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+					for (const video of videos) {
+						try {
+							if (hidden) {
+								if (!video.paused && !video.muted) {
+									video.dataset.ocsWasMuted = String(video.muted);
+									video.muted = true;
+								}
+							} else {
+								const wasMuted = video.dataset.ocsWasMuted;
+								if (wasMuted !== undefined) {
+									video.muted = wasMuted === 'true';
+									delete video.dataset.ocsWasMuted;
+								}
+							}
+						} catch {
+							/* 忽略单个视频操作异常 */
+						}
+					}
+				}
+
 				function visibleDetect() {
 					setTimeout(() => {
 						if (!messageElement?.isConnected) messageElement = undefined;
 
-						if (document.visibilityState === 'hidden' && !messageElement) {
-							messageElement = $message.warn({
-								content:
-									'⚠️检测到浏览器最小化/切屏，脚本可能无法正常运行，请保持网课页面在前台！（如果您正在全屏游戏中可以忽略此警告）',
-								duration: 0
-							});
+						const hidden = document.visibilityState === 'hidden';
+						const warningEnabled = CommonProject.scripts.settings.cfg.enableVisibilityWarning !== false;
+
+						if (hidden) {
+							handleVideosVisibility(true);
+							if (warningEnabled && !messageElement) {
+								messageElement = $message.warn({
+									content:
+										'⚠️检测到浏览器最小化/切屏，脚本可能无法正常运行，请保持网课页面在前台！（如果您正在全屏游戏中可以忽略此警告，或在设置中关闭本警告）',
+									duration: 0
+								});
+							}
+						} else {
+							// 回到前台：清除警告并恢复视频静音状态
+							handleVideosVisibility(false);
+							if (messageElement) {
+								messageElement.remove();
+								messageElement = undefined;
+							}
 						}
 						visibleDetect();
 					}, 1000);
